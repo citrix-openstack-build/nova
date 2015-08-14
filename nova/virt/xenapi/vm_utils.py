@@ -20,6 +20,7 @@ their attributes like VDIs, VIFs, as well as their lookup functions.
 """
 
 import contextlib
+import glob
 import os
 import time
 import urllib
@@ -2058,37 +2059,77 @@ def _wait_for_vhd_coalesce(session, instance, sr_ref, vdi_ref,
     raise exception.NovaException(msg)
 
 
-def _remap_vbd_dev(dev):
-    """Return the appropriate location for a plugged-in VBD device
+def _get_vbd_path(vdi_uuid):
+    """Get vbd path with vdi_uuid"""
 
-    Ubuntu Maverick moved xvd? -> sd?. This is considered a bug and will be
-    fixed in future versions:
-        https://bugs.launchpad.net/ubuntu/+source/linux/+bug/684875
+    dom_id, _ = utils.execute('xenstore-read', 'domid', run_as_root=True)
+    backend_vbd = '/local/domain/' + dom_id.strip() + '/device/vbd/'
+    vbd_path_list = glob.glob('/sys/devices/vbd-*')
 
-    For now, we work around it by just doing a string replace.
-    """
-    # NOTE(sirp): This hack can go away when we pull support for Maverick
-    should_remap = CONF.xenserver.remap_vbd_dev
-    if not should_remap:
-        return dev
+    # loop /sys/devices/vbd-* to find the correct vbd path
+    for vbd_path in vbd_path_list:
+        device_id = vbd_path.split('-')[1]
+        backend_path = backend_vbd + device_id.strip() + '/backend'
+        try:
+            vdi_path, _ = utils.execute(
+                'xenstore-read', backend_path, run_as_root=True,
+                delay_on_retry=True, attempts=5)
+            vdi_path = vdi_path.strip() + '/vdi'
+            vdi_info, _ = utils.execute(
+                'xenstore-read', vdi_path, run_as_root=True,
+                delay_on_retry=True, attempts=5)
+            LOG.debug('vdi: %(vdi_uuid)s, %(vdi_path)s, '
+                      'vdi_info: %(vdi_info)s.',
+                      {'vdi_uuid': vdi_uuid, 'vdi_path': vdi_path,
+                       'vdi_info': vdi_info})
+            if vdi_info.find(vdi_uuid) > -1:
+                return vbd_path
+        except Exception:
+            # continue next loop when getting vdi_path or vdi_info failed
+            LOG.debug('Error while reading vdi info, vbd path is %s', vbd_path)
+            continue
 
-    old_prefix = 'xvd'
-    new_prefix = CONF.xenserver.remap_vbd_dev_prefix
-    remapped_dev = dev.replace(old_prefix, new_prefix)
-
-    return remapped_dev
+    # No vbd found with specific vdi_uuid
+    return None
 
 
-def _wait_for_device(dev):
-    """Wait for device node to appear."""
+def _wait_for_device(vdi_uuid):
+    """Wait for device node to appear"""
+
+    # loop to wait for backend/frontend get ready, avoid race condition
     for i in range(0, CONF.xenserver.block_device_creation_timeout):
-        dev_path = utils.make_dev_path(dev)
-        if os.path.exists(dev_path):
-            return
+        vbd_path = _get_vbd_path(vdi_uuid)
+        if vbd_path:
+            break
+        time.sleep(1)
+    else:
+        # set vbd_path a meaningful value since it is None now
+        vbd_path = 'vbd'
+        raise exception.StorageError(reason=
+            _("Timeout waiting for device %s to be created") % vbd_path)
+
+    # wait for dev under /sys/devices/vbd-*/block to be ready
+    block_path = vbd_path + '/block'
+    for i in range(i, CONF.xenserver.block_device_creation_timeout):
+        dev_list = os.listdir(block_path)
+        if len(dev_list) > 0:
+            dev_tmp = dev_list[0]
+            break
+        time.sleep(1)
+    else:
+        raise exception.StorageError(reason=
+            _("Timeout waiting for device %s to be created") % block_path)
+
+    # wait for device node to be created
+    dev = utils.make_dev_path(dev_tmp)
+    LOG.debug('Wait for device %s to be created', dev)
+    for i in range(i, CONF.xenserver.block_device_creation_timeout):
+        if os.path.exists(dev):
+            return dev
         time.sleep(1)
 
     raise exception.StorageError(
-        reason=_('Timeout waiting for device %s to be created') % dev)
+        reason=_("Timeout waiting for device %s to be created") % dev)
 
 
 def cleanup_attached_vdis(session):
@@ -2125,15 +2166,10 @@ def vdi_attached_here(session, vdi_ref, read_only=False):
         session.VBD.plug(vbd_ref, this_vm_ref)
         try:
             LOG.debug('Plugging VBD %s done.', vbd_ref)
-            orig_dev = session.call_xenapi("VBD.get_device", vbd_ref)
-            LOG.debug('VBD %(vbd_ref)s plugged as %(orig_dev)s',
-                      {'vbd_ref': vbd_ref, 'orig_dev': orig_dev})
-            dev = _remap_vbd_dev(orig_dev)
-            if dev != orig_dev:
-                LOG.debug('VBD %(vbd_ref)s plugged into wrong dev, '
-                          'remapping to %(dev)s',
-                          {'vbd_ref': vbd_ref, 'dev': dev})
-            _wait_for_device(dev)
+            vdi_uuid = _vdi_get_uuid(session, vdi_ref)
+            dev = _wait_for_device(vdi_uuid)
+            LOG.debug('VBD %(vbd_ref)s plugged as %(dev)s',
+                      {'vbd_ref': vbd_ref, 'dev': dev})
             yield dev
         finally:
             utils.execute('sync', run_as_root=True)

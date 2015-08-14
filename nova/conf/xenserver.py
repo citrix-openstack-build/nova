@@ -325,17 +325,7 @@ xenapi_opts = [
                help='The iSCSI Target Port, default is port 3260'),
     cfg.StrOpt('iqn_prefix',
                default='iqn.2010-10.org.openstack',
-               help='IQN Prefix'),
-    # NOTE(sirp): This is a work-around for a bug in Ubuntu Maverick,
-    # when we pull support for it, we should remove this
-    cfg.BoolOpt('remap_vbd_dev',
-                default=False,
-                help='Used to enable the remapping of VBD dev '
-                     '(Works around an issue in Ubuntu Maverick)'),
-    cfg.StrOpt('remap_vbd_dev_prefix',
-               default='sd',
-               help='Specify prefix to remap VBD dev to '
-                    '(ex. /dev/xvdb -> /dev/sdb)'),
+               help='IQN Prefix')
 ]
 
 xenapi_vmops_opts = [
