@@ -24,6 +24,7 @@ import string
 from eventlet import greenthread
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_utils import versionutils
 
 from nova import exception
 from nova.i18n import _, _LE, _LW
@@ -120,6 +121,9 @@ def introduce_sr(session, sr_uuid, label, params):
 
     sr_type, sr_desc = _handle_sr_params(params)
 
+    if _hypervisor_vbd_bug(session.product_version) and sr_type == 'iscsi':
+        params['backend-kind'] = 'vbd'
+
     sr_ref = session.call_xenapi('SR.introduce', sr_uuid, label, sr_desc,
             sr_type, '', False, params)
 
@@ -131,6 +135,12 @@ def introduce_sr(session, sr_uuid, label, params):
 
     session.call_xenapi("SR.scan", sr_ref)
     return sr_ref
+
+
+def _hypervisor_vbd_bug(version):
+    # Fix for Bug #1502929
+    version_as_string = '.'.join(str(v) for v in version)
+    return (versionutils.is_compatible('6.5', version_as_string))
 
 
 def _handle_sr_params(params):
