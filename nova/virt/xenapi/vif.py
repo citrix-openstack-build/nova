@@ -28,7 +28,6 @@ from nova.virt.xenapi import vm_utils
 
 
 xenapi_ovs_integration_bridge_opt = cfg.StrOpt('ovs_integration_bridge',
-                        default='xapi1',
                         help='Name of Integration Bridge used by Open vSwitch')
 
 CONF = cfg.CONF
