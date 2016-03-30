@@ -105,6 +105,9 @@ def _download_tarball_and_verify(request, staging_path):
     else:
         msg = "Verified image checksum %(checksum)s"
         logging.info(msg % {'checksum': checksum})
+        return True
+
+    return False
 
 
 def _download_tarball(sr_path, staging_path, image_id, glance_host,
