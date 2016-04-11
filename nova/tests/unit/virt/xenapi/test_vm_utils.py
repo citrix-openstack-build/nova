@@ -18,8 +18,10 @@ import uuid
 
 from eventlet import greenthread
 import fixtures
+import glob
 import mock
 from mox3 import mox
+import os
 from oslo_concurrency import lockutils
 from oslo_concurrency import processutils
 from oslo_config import fixture as config_fixture
@@ -28,6 +30,7 @@ from oslo_utils import timeutils
 from oslo_utils import units
 from oslo_utils import uuidutils
 import six
+import time
 
 from nova.compute import flavors
 from nova.compute import power_state
@@ -1810,20 +1813,102 @@ class GetAllVdisTestCase(VMUtilsTestBase):
         session.call_xenapi.assert_called_once_with("SR.get_VDIs", sr_ref)
 
 
-class VDIAttachedHere(VMUtilsTestBase):
+class VDIAttachedHereTestCase(VMUtilsTestBase):
     @mock.patch.object(vm_utils, 'destroy_vbd')
     @mock.patch.object(vm_utils, '_get_this_vm_ref')
     @mock.patch.object(vm_utils, 'create_vbd')
-    @mock.patch.object(vm_utils, '_remap_vbd_dev')
     @mock.patch.object(vm_utils, '_wait_for_device')
     @mock.patch.object(utils, 'execute')
-    def test_sync_called(self, mock_execute, mock_wait_for_device,
-                         mock_remap_vbd_dev, mock_create_vbd,
+    def test_sync_called(self, mock_execute,
+                         mock_wait_for_device, mock_create_vbd,
                          mock_get_this_vm_ref, mock_destroy_vbd):
         session = _get_fake_session()
         with vm_utils.vdi_attached_here(session, 'vdi_ref'):
             pass
         mock_execute.assert_called_with('sync', run_as_root=True)
+
+
+class GetVbdPathTestCase(VMUtilsTestBase):
+    @mock.patch.object(glob, 'glob')
+    @mock.patch.object(utils, 'execute')
+    def test_get_vbd_path(self, mock_execute, mock_glob):
+        def fake_execute(*cmd, **kwargs):
+            if 'domid' in cmd:
+                return ('5', '')
+            if '/local/domain/5/device/vbd/333/backend' in cmd:
+                return ('local/domain/0/backend/vbd5/5/333', '')
+            if 'local/domain/0/backend/vbd5/5/333/vdi' in cmd:
+                return ('uuid:333, other:xxx', '')
+
+        mock_glob.return_value = ['/sys/devices/vbd-333']
+        utils.execute.side_effect = fake_execute
+        self.assertEqual('/sys/devices/vbd-333',
+                        vm_utils._get_vbd_path('333'))
+
+    @mock.patch.object(glob, 'glob')
+    @mock.patch.object(utils, 'execute')
+    def test_get_vbd_path_exception(self, mock_execute, mock_glob):
+        def fake_execute(*cmd, **kwargs):
+            if 'domid' in cmd:
+                return ('5', '')
+            if '/local/domain/5/device/vbd/333/backend' in cmd:
+                return ('local/domain/0/backend/vbd5/5/333', '')
+            if 'local/domain/0/backend/vbd5/5/333/vdi' in cmd:
+                return ('uuid:333, other:xxx', '')
+
+        mock_glob.return_value = ['/sys/devices/vbd-333']
+        utils.execute.side_effect = fake_execute
+        self.assertIsNone(vm_utils._get_vbd_path('111'))
+
+
+class WaitForDeviceTestCase(VMUtilsTestBase):
+    @mock.patch.object(os, 'listdir')
+    @mock.patch.object(utils, 'make_dev_path')
+    @mock.patch.object(os.path, 'exists')
+    @mock.patch.object(vm_utils, '_get_vbd_path')
+    def test_wait_for_device(self, mock_get_vbd_path, mock_exist,
+                             mock_make_dev_path, mock_listdir):
+        mock_listdir.return_value = ['xvdb']
+        mock_make_dev_path.return_value = '/dev/xvdb'
+        mock_exist.return_value = True
+        mock_get_vbd_path.return_value = '/sys/devices/vbd-333'
+        self.assertEqual('/dev/xvdb', vm_utils._wait_for_device('333'))
+
+    @mock.patch.object(vm_utils, '_get_vbd_path')
+    @mock.patch.object(time, 'sleep')
+    def test_wait_for_device_empty_vbd(self, mock_sleep, mock_get_vbd_path):
+        mock_get_vbd_path.return_value = None
+        self.assertRaises(exception.StorageError,
+                          vm_utils._wait_for_device, '111')
+        self.assertEqual(CONF.xenserver.block_device_creation_timeout,
+                         mock_sleep.call_count)
+
+    @mock.patch.object(os, 'listdir')
+    @mock.patch.object(time, 'sleep')
+    @mock.patch.object(vm_utils, '_get_vbd_path')
+    def test_wait_for_device_empty_block_path(self, mock_get_vbd_path,
+                                            mock_sleep, mock_listdir):
+        mock_listdir.return_value = []
+        mock_get_vbd_path.return_value = '/sys/devices/vbd-333'
+        self.assertRaises(exception.StorageError,
+                          vm_utils._wait_for_device, '333')
+
+    @mock.patch.object(os, 'listdir')
+    @mock.patch.object(utils, 'make_dev_path')
+    @mock.patch.object(os.path, 'exists')
+    @mock.patch.object(time, 'sleep')
+    @mock.patch.object(vm_utils, '_get_vbd_path')
+    def test_wait_for_device_make_path_fail(self, mock_get_vbd_path,
+                                            mock_sleep, mock_exist,
+                                            mock_make_dev_path, mock_listdir):
+        mock_listdir.return_value = ['xvdb']
+        mock_make_dev_path.return_value = '/dev/xvdb'
+        mock_exist.return_value = False
+        mock_get_vbd_path.return_value = '/sys/devices/vbd-333'
+        self.assertRaises(exception.StorageError,
+                          vm_utils._wait_for_device, '333')
+        self.assertEqual(CONF.xenserver.block_device_creation_timeout,
+                         mock_sleep.call_count)
 
 
 class SnapshotAttachedHereTestCase(VMUtilsTestBase):

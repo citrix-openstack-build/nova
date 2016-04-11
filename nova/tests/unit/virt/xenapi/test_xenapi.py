@@ -755,6 +755,12 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
 
         image_meta = objects.ImageMeta.from_dict(
             IMAGE_FIXTURES[image_ref]["image_meta"])
+
+        # Fake to avoid system calls os.listdir(), time.sleep()
+        def fake_wait_for_device(vbd_path):
+            return '/dev/fake_xvda'
+        self.stubs.Set(vm_utils, '_wait_for_device', fake_wait_for_device)
+
         self.conn.spawn(self.context, instance, image_meta, injected_files,
                         'herp', network_info, block_device_info)
         self.create_vm_record(self.conn, os_type, instance['name'])

@@ -1,0 +1,6 @@
+---
+upgrade:
+  - Remove two config variables 'remap_vbd_dev' and
+    'remap_vbd_dev_prefix' in nova/conf/xenserver.py.
+    The new implementation do not rely on XenAPI call and
+    the two config variables are not used any more.
